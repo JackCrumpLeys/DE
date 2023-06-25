@@ -51,7 +51,7 @@ impl Battery {
     }
 
     /// Directly changes the energy level of the battery by the given amount of energy.
-    fn change(&mut self, delta: f64) {
+    pub(crate) fn change(&mut self, delta: f64) {
         debug_assert!(delta.is_finite());
 
         self.energy = (self.energy + delta).clamp(0., self.capacity);

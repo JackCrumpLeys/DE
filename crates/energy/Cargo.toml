@@ -15,3 +15,6 @@ categories.workspace = true
 
 [dependencies]
 bevy.workspace = true
+de_core.workspace = true
+
+petgraph.workspace = true
