@@ -16,5 +16,7 @@ categories.workspace = true
 [dependencies]
 bevy.workspace = true
 de_core.workspace = true
+de_index.workspace = true
 
 petgraph.workspace = true
+parry3d.workspace = true

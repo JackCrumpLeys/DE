@@ -1,8 +1,13 @@
+use bevy::ecs::entity;
 use std::collections::HashMap;
+use std::sync::{Mutex, RwLock};
 
 use bevy::prelude::*;
 use de_core::baseset::GameSet;
 use de_core::gamestate::GameState;
+use de_index::SpatialQuery;
+use parry3d::bounding_volume::Aabb;
+use parry3d::math::Point;
 use petgraph::dot::{Config, Dot};
 use petgraph::graph::UnGraph;
 use petgraph::prelude::*;
@@ -49,29 +54,17 @@ pub struct EnergyReceiver;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct EnergyProducer;
 
-/// A member of the power grid.
-#[derive(Debug, Clone, Copy)]
-struct Member {
-    /// The entity of the member.
-    entity: Entity,
-    /// The energy receiver component of the member.
-    location: Vec3,
-}
-
 /// The power grid resource is used to store the power grid graph.
 #[derive(Resource, Debug, Clone)]
 pub(crate) struct PowerGrid {
     /// The power grid graph.
-    graph: UnGraph<Member, f64>,
-    /// A map from entities to their corresponding node index in the graph.
-    entity_to_node: HashMap<Entity, NodeIndex>,
+    graph: GraphMap<Entity, f64, Undirected>,
 }
 
 impl Default for PowerGrid {
     fn default() -> Self {
         Self {
-            graph: UnGraph::new_undirected(),
-            entity_to_node: HashMap::new(),
+            graph: GraphMap::new(),
         }
     }
 }
@@ -84,118 +77,7 @@ fn clean_up(mut commands: Commands) {
     commands.remove_resource::<PowerGrid>();
 }
 
-// fn update_power_grid(
-//     mut commands: Commands,
-//     mut power_grid: ResMut<PowerGrid>,
-//     producers_query: Query<(Entity, &EnergyProducer, &Transform)>,
-//     receivers_query: Query<(Entity, &EnergyReceiver, &Transform)>,
-// ) {
-//     let system_run_time = std::time::Instant::now();
-//
-//     let mut nodes_to_remove: Vec<NodeIndex> = Vec::new();
-//
-//     // Remove entities that were despawned
-//     power_grid.entity_to_node.retain(|&entity, node_index| {
-//         if !producers_query.get_component::<Transform>(entity).is_ok()
-//             && !receivers_query.get_component::<Transform>(entity).is_ok()
-//         {
-//             nodes_to_remove.push(*node_index);
-//             false
-//         } else {
-//             true
-//         }
-//     });
-//
-//     // Remove nodes that were despawned
-//     for node_index in nodes_to_remove {
-//         power_grid.graph.remove_node(node_index);
-//     }
-//
-//     let mut entities_to_add: Vec<(Entity, Vec3)> = Vec::new();
-//
-//     let mut updated_transforms: Vec<(NodeIndex, Vec3)> = Vec::new();
-//
-//     // Find new and updated entities
-//     for (entity, _receiver, transform) in receivers_query.iter() {
-//         if let Some(node_index) = power_grid.entity_to_node.get(&entity) {
-//             if power_grid.graph[*node_index].location != transform.translation {
-//                 updated_transforms.push((*node_index, transform.translation));
-//             }
-//         } else {
-//             entities_to_add.push((entity, transform.translation));
-//         }
-//     }
-//
-//     for (entity, _producer, transform) in producers_query.iter() {
-//         if let Some(node_index) = power_grid.entity_to_node.get(&entity) {
-//             if power_grid.graph[*node_index].location != transform.translation {
-//                 updated_transforms.push((*node_index, transform.translation));
-//             }
-//         } else {
-//             entities_to_add.push((entity, transform.translation));
-//         }
-//     }
-//
-//     // Update transforms
-//     for (index, transform) in updated_transforms {
-//         power_grid.graph[index].location = transform;
-//     }
-//
-//     // Update edges based on new and updated entities. Assemble graph
-//     for (entity, node_index) in entities_to_add {
-//         let new_node = Member {
-//             entity,
-//             location: node_index,
-//         };
-//
-//         let new_node_index = power_grid.graph.add_node(new_node);
-//         power_grid.entity_to_node.insert(entity, new_node_index);
-//     }
-//
-//     let mut edges_to_add: Vec<(NodeIndex, NodeIndex, f64)> = Vec::new();
-//
-//     for (entity, node) in power_grid.entity_to_node.iter() {
-//         let node_index = *node;
-//         let node_location = power_grid.graph[node_index].location;
-//
-//         let mut edges = 0;
-//
-//         for (other_entity, other_node) in power_grid.entity_to_node.iter() {
-//             if entity == other_entity {
-//                 continue;
-//             }
-//
-//             let other_node_index = *other_node;
-//             let other_node_location = power_grid.graph[other_node_index].location;
-//
-//             let distance = node_location.distance(other_node_location);
-//
-//             if distance <= MAX_DISTANCE {
-//                 let edge = power_grid.graph.find_edge(node_index, other_node_index);
-//
-//                 if edge.is_none() && !edges_to_add.contains(&(node_index, other_node_index, MAX_TRANSFER_RATE)) {
-//                     edges_to_add.push((node_index, other_node_index, MAX_TRANSFER_RATE));
-//                 }
-//
-//                 edges += 1;
-//                 if edges == MAX_EDGES {
-//                     break;
-//                 }
-//             }
-//         }
-//     }
-//     for (node_one, node_two, weight) in edges_to_add {
-//         println!("Adding edge {:?} <-> {:?} with weight {}", node_one, node_two, weight);
-//         power_grid.graph.add_edge(node_one, node_two, weight);
-//     }
-//     println!("Power grid update took {:?}", system_run_time.elapsed());
-// }
-
-fn update_nodes_helper(
-    commands: &mut Commands,
-    power_grid: &mut ResMut<PowerGrid>,
-    nodes_to_remove: &mut Vec<NodeIndex>,
-) {
+fn update_nodes_helper(power_grid: &mut ResMut<PowerGrid>, nodes_to_remove: &mut Vec<Entity>) {
     // Remove nodes that were despawned from the graph
     for node_index in nodes_to_remove.iter() {
         power_grid.graph.remove_node(*node_index);
@@ -204,148 +86,176 @@ fn update_nodes_helper(
 }
 
 fn update_edges_helper(
-    power_grid: &mut ResMut<PowerGrid>,
-    node_one: NodeIndex,
+    power_grid: &PowerGrid,
+    transforms: &Query<&Transform, Or<(With<EnergyProducer>, With<EnergyReceiver>)>>,
+    node_one: Entity,
     node_location: Vec3,
-    edges_to_add: &mut Vec<(NodeIndex, NodeIndex, f64)>,
-    edges_to_remove: &mut Vec<(NodeIndex, NodeIndex)>,
+    edges_to_add: &mut Vec<(Entity, Entity, f64)>,
+    spacial_index: &SpatialQuery<Entity, Or<(With<EnergyProducer>, With<EnergyReceiver>)>>,
 ) {
-    let mut edges = 0;
-    for (other_node_index, other_node) in power_grid
-        .graph
-        .node_indices()
-        .map(|i| (i, &power_grid.graph[i]))
-    {
-        if node_one == other_node_index {
+    let aabb = Aabb::new(
+        Point::from([
+            node_location.x - MAX_DISTANCE,
+            node_location.y - MAX_DISTANCE,
+            node_location.z - MAX_DISTANCE,
+        ]),
+        Point::from([
+            node_location.x + MAX_DISTANCE,
+            node_location.y + MAX_DISTANCE,
+            node_location.z + MAX_DISTANCE,
+        ]),
+    );
+    let query = spacial_index.query_aabb(&aabb, None);
+
+    let mut closest_four: Vec<Option<(f32, Entity)>> = vec![None, None, None, None];
+
+    for node in query {
+        if node_one == node {
+            continue;
+        }
+        // println!("considering {:?}", node);
+        if power_grid.graph.edges(node).count() >= MAX_EDGES {
+            // println!("Too many edges!");
             continue;
         }
 
-        let other_node_location = other_node.location;
+        let other_node_location = transforms.get(node).unwrap().translation;
         let distance = node_location.distance(other_node_location);
+        // println!("distance: {:?}", distance);
 
-        if distance <= MAX_DISTANCE
-            && power_grid
-                .graph
-                .find_edge(node_one, other_node_index)
-                .is_none()
-            && !edges_to_add.contains(&(node_one, other_node_index, MAX_TRANSFER_RATE))
-        {
-            edges_to_add.push((node_one, other_node_index, MAX_TRANSFER_RATE));
-
-            edges += 1;
-            if edges == MAX_EDGES {
-                break;
+        if distance <= MAX_DISTANCE {
+            for i in 0..3 {
+                if (closest_four[i].is_some() && closest_four[i].unwrap().0 > distance)
+                    || closest_four[i].is_none()
+                {
+                    closest_four[i] = Some((distance, node));
+                    break;
+                }
             }
         }
-
-        if distance > MAX_DISTANCE
-            && power_grid
-                .graph
-                .find_edge(node_one, other_node_index)
-                .is_some()
-        {
-            edges_to_remove.push((node_one, other_node_index));
-        }
     }
+    // println!("closest 4: {:?}", closest_four);
+
+    edges_to_add.append(
+        &mut closest_four
+            .iter()
+            .filter_map(|edge| *edge)
+            .map(|(_distance, entity)| (node_one, entity, MAX_TRANSFER_RATE))
+            .collect(),
+    )
 }
 
 fn update_power_grid(
-    mut commands: Commands,
     mut power_grid: ResMut<PowerGrid>,
-    producers_query: Query<(Entity, &EnergyProducer, &Transform)>,
-    receivers_query: Query<(Entity, &EnergyReceiver, &Transform)>,
+    power_query: Query<&Transform, Or<(With<EnergyProducer>, With<EnergyReceiver>)>>,
+    changed_transforms: Query<
+        Entity,
+        (
+            Changed<Transform>,
+            Or<(With<EnergyProducer>, With<EnergyReceiver>)>,
+        ),
+    >,
+    new_entities: Query<Entity, Or<(Added<EnergyProducer>, Added<EnergyReceiver>)>>,
+    mut removed_receivers: RemovedComponents<EnergyReceiver>,
+    mut removed_producers: RemovedComponents<EnergyProducer>,
+    spacial_index: SpatialQuery<Entity, Or<(With<EnergyProducer>, With<EnergyReceiver>)>>,
 ) {
     let system_run_time = std::time::Instant::now();
 
-    let mut nodes_to_remove: Vec<NodeIndex> = Vec::new();
+    let mut nodes_to_remove: Vec<Entity> = Vec::new();
+
+    // combine removed receivers and producers
+    let removed_entities: Vec<Entity> = removed_receivers
+        .iter()
+        .chain(removed_producers.iter())
+        .collect();
 
     // Remove entities that were despawned
-    power_grid.entity_to_node.retain(|&entity, node_index| {
-        if !producers_query.get_component::<Transform>(entity).is_ok()
-            && !receivers_query.get_component::<Transform>(entity).is_ok()
-        {
-            nodes_to_remove.push(*node_index);
-            false
-        } else {
-            true
-        }
-    });
+    for entity in removed_entities.iter() {
+        nodes_to_remove.push(*entity);
+    }
 
     // Remove nodes that were despawned
-    update_nodes_helper(&mut commands, &mut power_grid, &mut nodes_to_remove);
+    update_nodes_helper(&mut power_grid, &mut nodes_to_remove);
 
-    println!(
-        "Power grid node despawning took {:?}",
-        system_run_time.elapsed()
-    );
+    // println!(
+    //     "Power grid node despawning took {:?}",
+    //     system_run_time.elapsed()
+    // );
+    //
+    // println!(
+    //     "Power grid update entities took {:?}",
+    //     system_run_time.elapsed()
+    // );
+    //
+    // println!(
+    //     "Power grid update transforms took {:?}",
+    //     system_run_time.elapsed()
+    // );
 
-    let mut updated_transforms: Vec<(NodeIndex, Vec3)> = Vec::new();
+    // // Update edges based on new and updated entities. Assemble graph
+    // let mut edges_to_add_lock: RwLock<Vec<(Entity, Entity, f64)>> = RwLock::new(Vec::new());
+    // let mut edges_to_remove_lock: RwLock<Vec<(Entity, Entity)>> = RwLock::new(Vec::new());
+    //
+    // let power_grid_lock = RwLock::new(power_grid);
 
-    // Find new and updated entities
-    for (entity, _receiver, transform) in receivers_query.iter() {
-        if let Some(node_index) = power_grid.entity_to_node.get(&entity) {
-            if power_grid.graph[*node_index].location != transform.translation {
-                updated_transforms.push((*node_index, transform.translation));
-            }
-        } else {
-            let new_node = Member {
-                entity,
-                location: transform.translation,
-            };
+    let mut edges_to_add: Vec<(Entity, Entity, f64)> = Vec::new();
 
-            let new_node_index = power_grid.graph.add_node(new_node);
-            power_grid.entity_to_node.insert(entity, new_node_index);
-        }
+    for entity in new_entities.iter() {
+        let node = power_grid.graph.add_node(entity);
+        let node_location = power_query.get(entity).unwrap().translation;
+
+        update_edges_helper(
+            power_grid.as_ref(),
+            &power_query,
+            node,
+            node_location,
+            &mut edges_to_add,
+            &spacial_index,
+        );
     }
 
-    for (entity, _producer, transform) in producers_query.iter() {
-        if let Some(node_index) = power_grid.entity_to_node.get(&entity) {
-            if power_grid.graph[*node_index].location != transform.translation {
-                updated_transforms.push((*node_index, transform.translation));
-            }
-        } else {
-            let new_node = Member {
-                entity,
-                location: transform.translation,
-            };
+    for entity in changed_transforms.iter() {
+        let node_location = power_query.get(entity).unwrap().translation;
 
-            let new_node_index = power_grid.graph.add_node(new_node);
-            power_grid.entity_to_node.insert(entity, new_node_index);
-        }
+        update_edges_helper(
+            power_grid.as_ref(),
+            &power_query,
+            entity,
+            node_location,
+            &mut edges_to_add,
+            &spacial_index,
+        );
     }
 
-    for (node, transform) in updated_transforms {
-        power_grid.graph[node].location = transform;
-    }
+    // println!(
+    //     "Power grid update edges took {:?}",
+    //     system_run_time.elapsed()
+    // );
 
-    println!(
-        "Power grid update transforms took {:?}",
-        system_run_time.elapsed()
-    );
-
-    // Update edges based on new and updated entities. Assemble graph
-    let mut edges_to_add: Vec<(NodeIndex, NodeIndex, f64)> = Vec::new();
-    let mut edges_to_remove: Vec<(NodeIndex, NodeIndex)> = Vec::new();
-
-    for node_one in power_grid.graph.node_indices() {
-        let node = power_grid.graph[node_one];
-        let node_location = node.location;
-
-        update_edges_helper(&mut power_grid, node_one, node_location, &mut edges_to_add, &mut edges_to_remove);
-    }
-
-    println!(
-        "Power grid update edges took {:?}",
-        system_run_time.elapsed()
-    );
+    let mut considered_nodes = Vec::new();
+    let mut edges_to_remove = Vec::new();
 
     for (node_one, node_two, weight) in edges_to_add {
-        println!(
-            "Adding edge {:?} <-> {:?} with weight {}",
-            node_one, node_two, weight
-        );
+        // println!(
+        //     "Adding edge {:?} <-> {:?} with weight {}",
+        //     node_one, node_two, weight
+        // );
+        if considered_nodes.contains(&node_one) {
+            considered_nodes.push(node_one);
+
+            edges_to_remove.append(
+                &mut power_grid
+                    .graph
+                    .edges(node_one)
+                    .map(|edge| (edge.source(), edge.target()))
+                    .collect::<Vec<(Entity, Entity)>>()
+                    .clone(),
+            );
+        }
         power_grid.graph.add_edge(node_one, node_two, weight);
     }
+
     println!("Power grid update took {:?}", system_run_time.elapsed());
 }
 
