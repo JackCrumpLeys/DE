@@ -1,18 +1,10 @@
-use bevy::ecs::entity;
-use std::collections::HashMap;
-use std::sync::{Mutex, RwLock};
-
 use bevy::prelude::*;
 use de_core::baseset::GameSet;
 use de_core::gamestate::GameState;
-use de_index::SpatialQuery;
-use parry3d::bounding_volume::Aabb;
-use parry3d::math::Point;
-use petgraph::dot::{Config, Dot};
-use petgraph::graph::UnGraph;
+use de_index::{EntityKdTree, SpatialQuery};
 use petgraph::prelude::*;
+use de_core::projection::ToFlat;
 
-use crate::Battery;
 
 // The max distance (in meters) between two entities for them to be consider neighbors in the graph
 const MAX_DISTANCE: f32 = 10.0;
@@ -87,66 +79,48 @@ fn update_nodes_helper(power_grid: &mut ResMut<PowerGrid>, nodes_to_remove: &mut
 
 fn update_edges_helper(
     power_grid: &PowerGrid,
+    kd_tree: &EntityKdTree,
     transforms: &Query<&Transform, Or<(With<EnergyProducer>, With<EnergyReceiver>)>>,
     node_one: Entity,
     node_location: Vec3,
     edges_to_add: &mut Vec<(Entity, Entity, f64)>,
-    spacial_index: &SpatialQuery<Entity, Or<(With<EnergyProducer>, With<EnergyReceiver>)>>,
 ) {
-    let aabb = Aabb::new(
-        Point::from([
-            node_location.x - MAX_DISTANCE,
-            node_location.y - MAX_DISTANCE,
-            node_location.z - MAX_DISTANCE,
-        ]),
-        Point::from([
-            node_location.x + MAX_DISTANCE,
-            node_location.y + MAX_DISTANCE,
-            node_location.z + MAX_DISTANCE,
-        ]),
-    );
-    let query = spacial_index.query_aabb(&aabb, None);
-
-    let mut closest_four: Vec<Option<(f32, Entity)>> = vec![None, None, None, None];
-
-    for node in query {
-        if node_one == node {
+    let mut collected:usize = 0;
+    println!("considering {:?}, node_location: {:?}", node_one, node_location);
+    for edge in kd_tree
+        .radius(node_location.to_flat().as_ref(), MAX_DISTANCE)
+        .iter() {
+        println!("edge: {:?}", edge);
+        if edge.1 == node_one {
+            println!("edge is self");
             continue;
         }
-        // println!("considering {:?}", node);
-        if power_grid.graph.edges(node).count() >= MAX_EDGES {
-            // println!("Too many edges!");
+        println!("edge: {:?}, dist {:?}", edge.1, edge.0);
+        if power_grid.graph.contains_edge(node_one, edge.1) {
+            println!("edge already exists");
             continue;
         }
-
-        let other_node_location = transforms.get(node).unwrap().translation;
-        let distance = node_location.distance(other_node_location);
-        // println!("distance: {:?}", distance);
-
-        if distance <= MAX_DISTANCE {
-            for i in 0..3 {
-                if (closest_four[i].is_some() && closest_four[i].unwrap().0 > distance)
-                    || closest_four[i].is_none()
-                {
-                    closest_four[i] = Some((distance, node));
-                    break;
-                }
-            }
+        if collected >= MAX_EDGES {
+            println!("max edges reached");
+            break;
         }
+        println!("adding edge");
+        edges_to_add.push((node_one, edge.1, MAX_TRANSFER_RATE));
+        collected += 1;
     }
-    // println!("closest 4: {:?}", closest_four);
 
-    edges_to_add.append(
-        &mut closest_four
-            .iter()
-            .filter_map(|edge| *edge)
-            .map(|(_distance, entity)| (node_one, entity, MAX_TRANSFER_RATE))
-            .collect(),
-    )
+
+
+    // edges_to_add.append(
+    //     &mut
+    //         .map(|(distance, node_two)| (node_one, *node_two, MAX_TRANSFER_RATE))
+    //         .collect(),
+    // )
 }
 
 fn update_power_grid(
     mut power_grid: ResMut<PowerGrid>,
+    kd_tree: Res<EntityKdTree>,
     power_query: Query<&Transform, Or<(With<EnergyProducer>, With<EnergyReceiver>)>>,
     changed_transforms: Query<
         Entity,
@@ -202,31 +176,35 @@ fn update_power_grid(
     let mut edges_to_add: Vec<(Entity, Entity, f64)> = Vec::new();
 
     for entity in new_entities.iter() {
+        println!("new entity: {:?}", entity);
         let node = power_grid.graph.add_node(entity);
         let node_location = power_query.get(entity).unwrap().translation;
 
         update_edges_helper(
             power_grid.as_ref(),
+            kd_tree.as_ref(),
             &power_query,
             node,
             node_location,
             &mut edges_to_add,
-            &spacial_index,
         );
     }
 
     for entity in changed_transforms.iter() {
+        println!("changed entity: {:?}", entity);
         let node_location = power_query.get(entity).unwrap().translation;
 
         update_edges_helper(
             power_grid.as_ref(),
+            kd_tree.as_ref(),
             &power_query,
             entity,
             node_location,
             &mut edges_to_add,
-            &spacial_index,
         );
     }
+
+    // look for entities that have had the
 
     // println!(
     //     "Power grid update edges took {:?}",
@@ -241,7 +219,7 @@ fn update_power_grid(
         //     "Adding edge {:?} <-> {:?} with weight {}",
         //     node_one, node_two, weight
         // );
-        if considered_nodes.contains(&node_one) {
+        if !considered_nodes.contains(&node_one) {
             considered_nodes.push(node_one);
 
             edges_to_remove.append(
@@ -254,6 +232,11 @@ fn update_power_grid(
             );
         }
         power_grid.graph.add_edge(node_one, node_two, weight);
+    }
+
+    for edge in edges_to_remove {
+        // println!("Removing edge {:?} <-> {:?}", edge.0, edge.1);
+        power_grid.graph.remove_edge(edge.0, edge.1);
     }
 
     println!("Power grid update took {:?}", system_run_time.elapsed());

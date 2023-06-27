@@ -17,11 +17,13 @@ mod kdtree;
 
 use bevy::{app::PluginGroupBuilder, prelude::PluginGroup};
 use systems::IndexPlugin;
+use crate::kdtree::KdTreePlugin;
 
 pub use self::{
     collider::{ColliderWithCache, LocalCollider, QueryCollider},
     index::{EntityIndex, RayEntityIntersection, SpatialQuery},
     systems::IndexSet,
+    kdtree::EntityKdTree,
 };
 
 /// Size (in world-space) of a single square tile where entities are kept.
@@ -31,6 +33,6 @@ pub struct IndexPluginGroup;
 
 impl PluginGroup for IndexPluginGroup {
     fn build(self) -> PluginGroupBuilder {
-        PluginGroupBuilder::start::<Self>().add(IndexPlugin)
+        PluginGroupBuilder::start::<Self>().add(IndexPlugin).add(KdTreePlugin)
     }
 }
