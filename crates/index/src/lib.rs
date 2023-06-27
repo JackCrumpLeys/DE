@@ -13,6 +13,7 @@ mod index;
 mod range;
 mod segment;
 mod systems;
+mod kdtree;
 
 use bevy::{app::PluginGroupBuilder, prelude::PluginGroup};
 use systems::IndexPlugin;

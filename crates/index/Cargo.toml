@@ -23,6 +23,7 @@ parry3d.workspace = true
 parry2d.workspace = true
 ahash.workspace = true
 nalgebra.workspace = true
+kiddo.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
