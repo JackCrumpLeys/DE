@@ -2,10 +2,11 @@ use bevy::prelude::*;
 use de_core::baseset::GameSet;
 use de_core::gamestate::GameState;
 use de_core::objects::{MovableSolid, StaticSolid};
-use kiddo::float::distance::SquaredEuclidean;
+use de_core::projection::ToFlat;
+use kiddo::float::distance::Manhattan;
 use kiddo::float::kdtree::KdTree;
 use std::collections::HashMap;
-use de_core::projection::ToFlat;
+use std::time::Instant;
 
 pub(crate) struct KdTreePlugin;
 
@@ -27,7 +28,7 @@ impl Plugin for KdTreePlugin {
 
 #[derive(Debug, Resource)]
 pub struct EntityKdTree {
-    tree: KdTree<f32, u64, 2, 100_000, u32>,
+    tree: KdTree<f32, u64, 2, 512, u32>,
     entity_to_last_loc: HashMap<Entity, ([f32; 2])>,
 }
 
@@ -41,12 +42,15 @@ impl Default for EntityKdTree {
 }
 
 impl EntityKdTree {
+    /// Returns the entities within a given radius of a point.
+    /// The distance is the Manhattan distance. (Not accurate, but fast and correctly ordered)
     pub fn radius(&self, point: &[f32; 2], radius: f32) -> Vec<(f32, Entity)> {
-        dbg!(self.tree
-            .within::<SquaredEuclidean>(point, radius)
+        self
+            .tree
+            .within::<Manhattan>(point, radius)
             .iter()
             .map(|nn| (nn.distance, Entity::from_bits(nn.item)))
-            .collect())
+            .collect()
     }
 }
 
@@ -83,15 +87,50 @@ fn update(
     mut entity_kd_tree: ResMut<EntityKdTree>,
     query: Query<(Entity, &Transform), (With<TrackedByKdTree>, Changed<Transform>)>,
 ) {
+    let time = Instant::now();
     for (entity, transform) in query.iter() {
         let last_known_coords = *entity_kd_tree.entity_to_last_loc.get(&entity).unwrap();
+        let coords = *transform.translation.to_flat().as_ref();
+        if last_known_coords == coords {
+            continue;
+        }
 
-        entity_kd_tree.tree.remove(&last_known_coords, entity.to_bits());
-        entity_kd_tree.tree.add(
-            transform.translation.to_flat().as_ref(),
-            entity.to_bits(),
+        entity_kd_tree
+            .tree
+            .remove(&last_known_coords, entity.to_bits());
+        entity_kd_tree
+            .tree
+            .add(&coords, entity.to_bits());
+
+        *entity_kd_tree.entity_to_last_loc.get_mut(&entity).unwrap() =
+            coords;
+    }
+    // println!("Update took: {:?}", time.elapsed());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kiddo::distance_metric::DistanceMetric;
+
+    #[test]
+    fn test() {
+        let mut tree = EntityKdTree::default();
+
+        tree.tree.add(&[1.0, 2.0], Entity::from_raw(1).to_bits());
+        tree.tree.add(&[2.0, 1.0], Entity::from_raw(2).to_bits());
+        tree.tree.add(&[3.0, 2.0], Entity::from_raw(3).to_bits());
+        tree.tree.add(&[4.0, 1.0], Entity::from_raw(4).to_bits());
+        tree.tree.add(&[5.0, 2.0], Entity::from_raw(5).to_bits());
+        tree.tree.add(&[6.0, 1.0], Entity::from_raw(6).to_bits());
+        dbg!(Manhattan::dist(&[0.0, 0.0], &[1.0, 2.0]));
+
+        let result = dbg!(tree.radius(&[0.0, 0.0], 5.0, 2));
+        assert_eq!(
+            result,
+            vec![(3.0, Entity::from_raw(2)), (3.0, Entity::from_raw(1))]
         );
 
-        *entity_kd_tree.entity_to_last_loc.get_mut(&entity).unwrap() = *transform.translation.to_flat().as_ref();
+        println!("{:?}", result);
     }
 }
