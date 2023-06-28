@@ -87,7 +87,6 @@ fn update(
     mut entity_kd_tree: ResMut<EntityKdTree>,
     query: Query<(Entity, &Transform), (With<TrackedByKdTree>, Changed<Transform>)>,
 ) {
-    let time = Instant::now();
     for (entity, transform) in query.iter() {
         let last_known_coords = *entity_kd_tree.entity_to_last_loc.get(&entity).unwrap();
         let coords = *transform.translation.to_flat().as_ref();
@@ -105,7 +104,6 @@ fn update(
         *entity_kd_tree.entity_to_last_loc.get_mut(&entity).unwrap() =
             coords;
     }
-    // println!("Update took: {:?}", time.elapsed());
 }
 
 #[cfg(test)]
